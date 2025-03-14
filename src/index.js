@@ -1,195 +1,371 @@
-/**
- * Welcome to Cloudflare Workers! This is your first worker.
- *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
- *
- * Learn more at https://developers.cloudflare.com/workers/
- */
+// Constants
+const DEFAULT_REGISTRY = 'registry-1.docker.io';
+const AUTH_URL = 'https://auth.docker.io';
+const DEFAULT_WHITELIST = ["library/nginx", "subfuzion/netcat"];
 
-addEventListener("fetch", (event) => {
-  event.passThroughOnException();
-  event.respondWith(handleRequest(event.request));
-});
-
-const dockerHub = "https://registry-1.docker.io";
-
-const routes = {
-  // production
-  ["docker." + CUSTOM_DOMAIN]: dockerHub,
-  ["quay." + CUSTOM_DOMAIN]: "https://quay.io",
-  ["gcr." + CUSTOM_DOMAIN]: "https://gcr.io",
-  ["k8s-gcr." + CUSTOM_DOMAIN]: "https://k8s.gcr.io",
-  ["k8s." + CUSTOM_DOMAIN]: "https://registry.k8s.io",
-  ["ghcr." + CUSTOM_DOMAIN]: "https://ghcr.io",
-  ["cloudsmith." + CUSTOM_DOMAIN]: "https://docker.cloudsmith.io",
-  ["ecr." + CUSTOM_DOMAIN]: "https://public.ecr.aws",
-
-  // staging
-  ["docker-staging." + CUSTOM_DOMAIN]: dockerHub,
+// Preflight request configuration
+/** @type {RequestInit} */
+const PREFLIGHT_INIT = {
+	headers: new Headers({
+		'access-control-allow-origin': '*',
+		'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
+		'access-control-max-age': '1728000',
+	}),
 };
 
-function routeByHosts(host) {
-  if (host in routes) {
-    return routes[host];
-  }
-  if (MODE == "debug") {
-    return TARGET_UPSTREAM;
-  }
-  return "";
-}
+/**
+ * Whitelist management module
+ */
+const WhitelistManager = {
+	/**
+	 * 解析白名单配置
+	 * @param {string|object} whitelistConfig JSON格式的白名单配置字符串或对象
+	 * @returns {string[]} 白名单数组
+	 */
+	parseWhitelist(whitelistConfig) {
+		try {
+			// 如果没有配置白名单，使用默认值
+			if (whitelistConfig === undefined || whitelistConfig === null) {
+				console.log('No whitelist configured, using default whitelist');
+				return DEFAULT_WHITELIST;
+			}
+			
+			// 如果是字符串，尝试解析JSON
+			const config = typeof whitelistConfig === 'string' 
+				? JSON.parse(whitelistConfig) 
+				: whitelistConfig;
 
-async function handleRequest(request) {
-  // drop if not from China or Singapore
-  if (request.cf.country !== 'CN' && request.cf.country !== 'SG') {
-    return new Response('Forbidden from ' + request.cf.country, { status: 403 });
-  }
+			// 确保配置是数组
+			if (!Array.isArray(config)) {
+				console.error('Whitelist must be an array, using default whitelist');
+				return DEFAULT_WHITELIST;
+			}
 
-  const url = new URL(request.url);
-  const upstream = routeByHosts(url.hostname);
-  if (upstream === "") {
-    return new Response(
-      JSON.stringify({
-        routes: routes,
-      }),
-      {
-        status: 404,
-      }
-    );
-  }
-  const isDockerHub = upstream == dockerHub;
-  const authorization = request.headers.get("Authorization");
-  if (url.pathname == "/v2/") {
-    const newUrl = new URL(upstream + "/v2/");
-    const headers = new Headers();
-    if (authorization) {
-      headers.set("Authorization", authorization);
-    }
-    // check if need to authenticate
-    const resp = await fetch(newUrl.toString(), {
-      method: "GET",
-      headers: headers,
-      redirect: "follow",
-    });
-    if (resp.status === 401) {
-      return responseUnauthorized(url);
-    }
-    return resp;
-  }
-  // get token
-  if (url.pathname == "/v2/auth") {
-    const newUrl = new URL(upstream + "/v2/");
-    const resp = await fetch(newUrl.toString(), {
-      method: "GET",
-      redirect: "follow",
-    });
-    if (resp.status !== 401) {
-      return resp;
-    }
-    const authenticateStr = resp.headers.get("WWW-Authenticate");
-    if (authenticateStr === null) {
-      return resp;
-    }
-    const wwwAuthenticate = parseAuthenticate(authenticateStr);
-    let scope = url.searchParams.get("scope");
-    // autocomplete repo part into scope for DockerHub library images
-    // Example: repository:busybox:pull => repository:library/busybox:pull
-    if (scope && isDockerHub) {
-      let scopeParts = scope.split(":");
-      if (scopeParts.length == 3 && !scopeParts[1].includes("/")) {
-        scopeParts[1] = "library/" + scopeParts[1];
-        scope = scopeParts.join(":");
-      }
-    }
-    return await fetchToken(wwwAuthenticate, scope, authorization);
-  }
-  // redirect for DockerHub library images
-  // Example: /v2/busybox/manifests/latest => /v2/library/busybox/manifests/latest
-  if (isDockerHub) {
-    const pathParts = url.pathname.split("/");
-    if (pathParts.length == 5) {
-      pathParts.splice(2, 0, "library");
-      const redirectUrl = new URL(url);
-      redirectUrl.pathname = pathParts.join("/");
-      return Response.redirect(redirectUrl, 301);
-    }
-  }
-  // foward requests
-  const newUrl = new URL(upstream + url.pathname);
-  const newReq = new Request(newUrl, {
-    method: request.method,
-    headers: request.headers,
-    // don't follow redirect to dockerhub blob upstream
-    redirect: isDockerHub ? "manual" : "follow",
-  });
-  const resp = await fetch(newReq);
-  if (resp.status == 401) {
-    return responseUnauthorized(url);
-  }
-  // handle dockerhub blob redirect manually
-  if (isDockerHub && resp.status == 307) {
-    const location = new URL(resp.headers.get("Location"));
-    const redirectResp = await fetch(location.toString(), {
-      method: "GET",
-      redirect: "follow",
-    });
-    return redirectResp;
-  }
-  return resp;
-}
+			// 确保所有元素都是字符串
+			const validEntries = config.filter(entry => typeof entry === 'string');
+			if (validEntries.length !== config.length) {
+				console.error('All whitelist entries must be strings');
+			}
 
-function parseAuthenticate(authenticateStr) {
-  // sample: Bearer realm="https://auth.ipv6.docker.com/token",service="registry.docker.io"
-  // match strings after =" and before "
-  const re = /(?<=\=")(?:\\.|[^"\\])*(?=")/g;
-  const matches = authenticateStr.match(re);
-  if (matches == null || matches.length < 2) {
-    throw new Error(`invalid Www-Authenticate Header: ${authenticateStr}`);
-  }
-  return {
-    realm: matches[0],
-    service: matches[1],
-  };
-}
+			return validEntries.length > 0 ? validEntries : DEFAULT_WHITELIST;
+		} catch (error) {
+			console.error('Failed to parse whitelist:', error);
+			return DEFAULT_WHITELIST;
+		}
+	},
 
-async function fetchToken(wwwAuthenticate, scope, authorization) {
-  const url = new URL(wwwAuthenticate.realm);
-  if (wwwAuthenticate.service.length) {
-    url.searchParams.set("service", wwwAuthenticate.service);
-  }
-  if (scope) {
-    url.searchParams.set("scope", scope);
-  }
-  const headers = new Headers();
-  if (authorization) {
-    headers.set("Authorization", authorization);
-  }
-  return await fetch(url, { method: "GET", headers: headers });
-}
+	/**
+	 * 检查镜像是否在白名单中
+	 * @param {string} imageName 镜像名称 (例如: library/nginx)
+	 * @param {string[]} whitelist 白名单数组
+	 * @returns {boolean} 是否允许访问
+	 */
+	isImageAllowed(imageName, whitelist) {
+		// 移除tag部分
+		const baseImage = imageName.split(':')[0];
+		
+		// 如果白名单为空，允许所有访问
+		if (!whitelist || whitelist.length === 0) {
+			return true;
+		}
 
-function responseUnauthorized(url) {
-  const headers = new (Headers);
-  if (MODE == "debug") {
-    headers.set(
-      "Www-Authenticate",
-      `Bearer realm="http://${url.host}/v2/auth",service="cloudflare-docker-proxy"`
-    );
-  } else {
-    headers.set(
-      "Www-Authenticate",
-      `Bearer realm="https://${url.hostname}/v2/auth",service="cloudflare-docker-proxy"`
-    );
-  }
-  return new Response(JSON.stringify({ message: "UNAUTHORIZED" }), {
-    status: 401,
-    headers: headers,
-  });
-}
+		// 检查是否在白名单中
+		return whitelist.some(allowed => {
+			// 完全匹配
+			if (baseImage === allowed) {
+				return true;
+			}
+			// 前缀匹配（用于允许某个组织下的所有镜像）
+			if (allowed.endsWith('/*') && baseImage.startsWith(allowed.slice(0, -2))) {
+				return true;
+			}
+			return false;
+		});
+	},
 
+	/**
+	 * 从请求路径中提取镜像名称
+	 * @param {string} pathname 请求路径
+	 * @returns {string|null} 镜像名称或null
+	 */
+	extractImageName(pathname) {
+		// 处理v2 API请求
+		// 匹配 /v2/{name}/manifests/{reference} 或 /v2/{name}/blobs/{digest}
+		const v2Match = pathname.match(/^\/v2\/([^/]+(?:\/[^/]+)*)\/(?:manifests|blobs)\/.+$/);
+		if (v2Match) {
+			return v2Match[1];
+		}
+
+		// 处理v1 API请求
+		const v1Match = pathname.match(/^\/v1\/repositories\/([^/]+(?:\/[^/]+)*)\/(?:tags|images)/);
+		if (v1Match) {
+			return v1Match[1];
+		}
+
+		return null;
+	}
+};
+
+/**
+ * Response utilities
+ */
+const ResponseUtils = {
+	/**
+	 * 构造响应
+	 * @param {any} body 响应体
+	 * @param {number} status 响应状态码
+	 * @param {Object<string, string>} headers 响应头
+	 * @returns {Response} 响应对象
+	 */
+	makeResponse(body, status = 200, headers = {}) {
+		headers['access-control-allow-origin'] = '*';
+		return new Response(body, { status, headers });
+	}
+};
+
+/**
+ * URL utilities
+ */
+const UrlUtils = {
+	/**
+	 * 构造新的URL对象
+	 * @param {string} urlStr URL字符串
+	 * @param {string} base URL base
+	 * @returns {URL|null} URL对象或null
+	 */
+	createUrl(urlStr, base) {
+		try {
+			console.log(`Constructing new URL object with path ${urlStr} and base ${base}`);
+			return new URL(urlStr, base);
+		} catch (err) {
+			console.error(`Failed to create URL: ${err.message}`);
+			return null;
+		}
+	}
+};
+
+/**
+ * HTTP proxy module
+ */
+const ProxyService = {
+	/**
+	 * 处理HTTP请求
+	 * @param {Request} req 请求对象
+	 * @param {string} pathname 请求路径
+	 * @param {string} baseHost 基地址
+	 * @returns {Promise<Response>} 响应承诺
+	 */
+	async handleRequest(req, pathname, baseHost) {
+		const reqHdrRaw = req.headers;
+
+		// 处理预检请求
+		if (req.method === 'OPTIONS' &&
+			reqHdrRaw.has('access-control-request-headers')
+		) {
+			return new Response(null, PREFLIGHT_INIT);
+		}
+
+		let rawLen = '';
+
+		const reqHdrNew = new Headers(reqHdrRaw);
+		reqHdrNew.delete("Authorization"); // 修复s3错误
+
+		const urlObj = UrlUtils.createUrl(pathname, 'https://' + baseHost);
+		if (!urlObj) {
+			return ResponseUtils.makeResponse('Invalid URL', 400, {
+				'Content-Type': 'text/plain'
+			});
+		}
+
+		/** @type {RequestInit} */
+		const reqInit = {
+			method: req.method,
+			headers: reqHdrNew,
+			redirect: 'follow',
+			body: req.body
+		};
+		return this.proxyRequest(urlObj, reqInit, rawLen);
+	},
+
+	/**
+	 * 代理请求
+	 * @param {URL} urlObj URL对象
+	 * @param {RequestInit} reqInit 请求初始化对象
+	 * @param {string} rawLen 原始长度
+	 * @returns {Promise<Response>} 响应承诺
+	 */
+	async proxyRequest(urlObj, reqInit, rawLen) {
+		const res = await fetch(urlObj.href, reqInit);
+		const resHdrOld = res.headers;
+		const resHdrNew = new Headers(resHdrOld);
+
+		// 验证长度
+		if (rawLen) {
+			const newLen = resHdrOld.get('content-length') || '';
+			const badLen = (rawLen !== newLen);
+
+			if (badLen) {
+				return ResponseUtils.makeResponse(res.body, 400, {
+					'--error': `bad len: ${newLen}, except: ${rawLen}`,
+					'access-control-expose-headers': '--error',
+				});
+			}
+		}
+		
+		const status = res.status;
+		resHdrNew.set('access-control-expose-headers', '*');
+		resHdrNew.set('access-control-allow-origin', '*');
+		resHdrNew.set('Cache-Control', 'max-age=1500');
+
+		// 删除不必要的头
+		resHdrNew.delete('content-security-policy');
+		resHdrNew.delete('content-security-policy-report-only');
+		resHdrNew.delete('clear-site-data');
+
+		return new Response(res.body, {
+			status,
+			headers: resHdrNew
+		});
+	}
+};
+
+/**
+ * Main registry proxy handler
+ */
+const RegistryProxy = {
+	/**
+	 * 处理主请求
+	 * @param {Request} request 请求对象
+	 * @param {Object} env 环境变量
+	 * @param {Object} ctx 执行上下文
+	 * @returns {Promise<Response>} 响应承诺
+	 */
+	async handleRequest(request, env, ctx) {
+		try {
+			const getReqHeader = (key) => request.headers.get(key);
+			let registryHost = DEFAULT_REGISTRY;
+			
+			let url = new URL(request.url);
+			const workers_url = `https://${url.hostname}`;
+
+			// 检查白名单
+			const imageName = WhitelistManager.extractImageName(url.pathname);
+			if (imageName) {
+				const whitelist = WhitelistManager.parseWhitelist(env.WHITELIST);
+				if (!WhitelistManager.isImageAllowed(imageName, whitelist)) {
+					return ResponseUtils.makeResponse('Image not in whitelist', 403, {
+						'Content-Type': 'application/json',
+						'Docker-Distribution-API-Version': 'registry/2.0'
+					});
+				}
+			}
+
+			// 获取请求参数中的 ns，确定上游主机地址
+			const ns = url.searchParams.get('ns');
+			if (ns) {
+				registryHost = ns === 'docker.io' ? DEFAULT_REGISTRY : ns;
+			}
+
+			console.log(`反代地址: ${registryHost}`);
+			
+			// 更改请求的主机名
+			url.hostname = registryHost;
+
+			// 修改包含 %2F 和 %3A 的请求
+			if (!/%2F/.test(url.search) && /%3A/.test(url.toString())) {
+				let modifiedUrl = url.toString().replace(/%3A(?=.*?&)/, '%3Alibrary%2F');
+				url = new URL(modifiedUrl);
+				console.log(`handle_url: ${url}`);
+			}
+
+			// 处理token请求
+			if (url.pathname.includes('/token')) {
+				let token_parameter = {
+					headers: {
+						'Host': 'auth.docker.io',
+						'User-Agent': getReqHeader("User-Agent"),
+						'Accept': getReqHeader("Accept"),
+						'Accept-Language': getReqHeader("Accept-Language"),
+						'Accept-Encoding': getReqHeader("Accept-Encoding"),
+						'Connection': 'keep-alive',
+						'Cache-Control': 'max-age=0'
+					}
+				};
+				let token_url = AUTH_URL + url.pathname + url.search;
+				return fetch(new Request(token_url, request), token_parameter);
+			}
+
+			// 修改 /v2/ 请求路径
+			if (registryHost === DEFAULT_REGISTRY && 
+				/^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && 
+				!/^\/v2\/library/.test(url.pathname)) {
+				url.pathname = '/v2/library/' + url.pathname.split('/v2/')[1];
+				console.log(`modified_url: ${url.pathname}`);
+			}
+
+			// 构造请求参数
+			let parameter = {
+				headers: {
+					'Host': registryHost,
+					'User-Agent': getReqHeader("User-Agent"),
+					'Accept': getReqHeader("Accept"),
+					'Accept-Language': getReqHeader("Accept-Language"),
+					'Accept-Encoding': getReqHeader("Accept-Encoding"),
+					'Connection': 'keep-alive',
+					'Cache-Control': 'max-age=0'
+				},
+				cacheTtl: 3600 // 缓存时间
+			};
+
+			// 添加Authorization头
+			if (request.headers.has("Authorization")) {
+				parameter.headers.Authorization = getReqHeader("Authorization");
+			}
+
+			// 添加可能存在字段X-Amz-Content-Sha256
+			if (request.headers.has("X-Amz-Content-Sha256")) {
+				parameter.headers['X-Amz-Content-Sha256'] = getReqHeader("X-Amz-Content-Sha256");
+			}
+
+			// 发起请求并处理响应
+			let original_response = await fetch(new Request(url, request), parameter);
+			let original_response_clone = original_response.clone();
+			let original_text = original_response_clone.body;
+			let response_headers = original_response.headers;
+			let new_response_headers = new Headers(response_headers);
+			let status = original_response.status;
+
+			// 修改 Www-Authenticate 头
+			if (new_response_headers.get("Www-Authenticate")) {
+				let re = new RegExp(AUTH_URL, 'g');
+				new_response_headers.set("Www-Authenticate", 
+					response_headers.get("Www-Authenticate").replace(re, workers_url));
+			}
+
+			// 处理重定向
+			if (new_response_headers.get("Location")) {
+				const location = new_response_headers.get("Location");
+				console.info(`Found redirection location, redirecting to ${location}`);
+				return ProxyService.handleRequest(request, location, registryHost);
+			}
+
+			// 返回修改后的响应
+			return new Response(original_text, {
+				status,
+				headers: new_response_headers
+			});
+		} catch (error) {
+			console.error(`Request handler failed: ${error.message}`);
+			return ResponseUtils.makeResponse('Internal server error', 500, {
+				'Content-Type': 'text/plain',
+				'X-Error-Details': error.message
+			});
+		}
+	}
+};
 
 export default {
 	async fetch(request, env, ctx) {
-		return new Response('Hello World!');
-	},
+		return RegistryProxy.handleRequest(request, env, ctx);
+	}
 };
