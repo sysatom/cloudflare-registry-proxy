@@ -82,7 +82,8 @@
 		  "hibiken/asynqmon",
 		  "drone/git",
 		  "langgenius/dify-sandbox",
-		  "jokobsk/netalertx"
+		  "jokobsk/netalertx",
+		  "yuukanoo/seelf"
 		]
 	},
 
