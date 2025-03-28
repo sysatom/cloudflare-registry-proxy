@@ -81,7 +81,8 @@
 		  "danielszabo99/microbin",
 		  "hibiken/asynqmon",
 		  "drone/git",
-		  "langgenius/dify-sandbox"
+		  "langgenius/dify-sandbox",
+		  "jokobsk/netalertx"
 		]
 	},
 
