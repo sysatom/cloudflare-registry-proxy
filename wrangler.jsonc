@@ -80,7 +80,8 @@
 		  "registry",
 		  "danielszabo99/microbin",
 		  "hibiken/asynqmon",
-		  "drone/git"
+		  "drone/git",
+		  "langgenius/dify-sandbox"
 		]
 	},
 
