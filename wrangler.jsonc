@@ -86,7 +86,8 @@
 		  "yuukanoo/seelf",
 		  "germannewsmaker/myspeed",
 		  "soulteary/cronicle",
-	          "revenz/fileflows"
+	          "revenz/fileflows",
+		  "joseluisq/static-web-server"
 		]
 	},
 
