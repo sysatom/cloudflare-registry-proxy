@@ -87,7 +87,8 @@
 		  "germannewsmaker/myspeed",
 		  "soulteary/cronicle",
 	          "revenz/fileflows",
-		  "joseluisq/static-web-server"
+		  "joseluisq/static-web-server",
+		  "bluet/cronicle-docker"
 		]
 	},
 
