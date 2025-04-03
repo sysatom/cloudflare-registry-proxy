@@ -29,6 +29,7 @@
 	 */
 	"vars": {
 	  "WHITELIST": [
+		  "library/*",
 		  "portainer/portainer-ce",
 		  "hacdias/webdav",
 		  "b3log/siyuan",
