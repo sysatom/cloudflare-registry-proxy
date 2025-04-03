@@ -81,7 +81,8 @@
 		  "soulteary/cronicle",
 	          "revenz/fileflows",
 		  "joseluisq/static-web-server",
-		  "bluet/cronicle-docker"
+		  "bluet/cronicle-docker",
+		  "caronc/apprise"
 		]
 	},
 
