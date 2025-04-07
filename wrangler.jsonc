@@ -82,7 +82,8 @@
 	          "revenz/fileflows",
 		  "joseluisq/static-web-server",
 		  "bluet/cronicle-docker",
-		  "caronc/apprise"
+		  "caronc/apprise",
+		  "xhongc/music_tag_web"
 		]
 	},
 
