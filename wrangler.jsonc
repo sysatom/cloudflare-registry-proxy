@@ -84,7 +84,8 @@
 		  "bluet/cronicle-docker",
 		  "caronc/apprise",
 		  "xhongc/music_tag_web",
-		  "p3terx/ariang"
+		  "p3terx/ariang",
+		  "p3terx/aria2-pro"
 		]
 	},
 
