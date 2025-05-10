@@ -83,7 +83,8 @@
 		  "joseluisq/static-web-server",
 		  "bluet/cronicle-docker",
 		  "caronc/apprise",
-		  "xhongc/music_tag_web"
+		  "xhongc/music_tag_web",
+		  "p3terx/ariang"
 		]
 	},
 
