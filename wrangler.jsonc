@@ -85,7 +85,8 @@
 		  "caronc/apprise",
 		  "xhongc/music_tag_web",
 		  "p3terx/ariang",
-		  "p3terx/aria2-pro"
+		  "p3terx/aria2-pro",
+		  "jetbrains/intellij-http-client"
 		]
 	},
 
